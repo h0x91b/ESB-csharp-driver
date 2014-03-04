@@ -587,11 +587,12 @@ namespace ESBClient
         {
             int messages = 0;
             int totalMessages = 0;
-            int requests = 0;
+            int cycles = 0;
             var now = DateTime.Now;
             var lastCleanUpTime = DateTime.Now;
             while (true)
             {
+                cycles++;
                 try
                 {
                     var isSomethingHappen = false;
@@ -626,24 +627,23 @@ namespace ESBClient
                     }
 
                     publisher.Flush();
-                    if ((DateTime.Now - now).TotalMilliseconds > 1000)
+                    if ((cycles % 250 == 0) && (DateTime.Now - now).TotalMilliseconds > 1000)
                     {
                         //Console.Out.WriteLine("1 sec passed, received {0} responses ({1} KB out / {2} KB in) {3} requests", messages, publisher.traffic / 1024, subscriber.traffic / 1024, requests);
                         messages = 0;
                         publisher.traffic = 0;
                         subscriber.traffic = 0;
-                        requests = 0;
                         now = DateTime.Now;
                         Ping();
                         SendLocalMethods();
                     }
-                    if ((DateTime.Now - lastCleanUpTime).TotalSeconds >= 30)
+                    if ((cycles % 250 == 0) && (DateTime.Now - lastCleanUpTime).TotalSeconds >= 30)
                     {
                         lastCleanUpTime = DateTime.Now;
                         CleanUpDeadCallbacks();
                     }
 
-                    if ((DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 3000)
+                    if ((cycles % 250 == 0) && (DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 3000)
                     {
                         Console.Out.WriteLine("More then 3 second there is no activity from ESB server, probaly it is dead...");
                         isConnecting = false;

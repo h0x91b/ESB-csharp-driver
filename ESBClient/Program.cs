@@ -24,35 +24,48 @@ namespace ESBClient
 
             var requests = 0;
             var responses = 0;
-            var now = DateTime.Now;
+            var errors = 0;
+            var chuck = 40000;
+            var complete = chuck;
+            var start = DateTime.Now;
             while (true)
             {
                 if (ESBClient.isReady)
                 {
-                    for (var i = 0; i < 15000; i++)
+                    if (complete == chuck)
                     {
-                        requests++;
-                        //ESBClient.Invoke("/math/plus", 1, ESBClient.stringToByteArray("{\"a\":2,\"b\":3}"), (errCode, data, err) =>
-                        //{
-                        //    responses++;
-                        //    if (errCode == ErrorCodes.OK)
-                        //    {
-                        //        var resp = System.Text.Encoding.UTF8.GetString(data);
-                        //        //Console.Out.WriteLine("2+3={0}", resp);
-                        //    }
-                        //    else
-                        //    {
-                        //        Console.Out.WriteLine("error response: {0}", err);
-                        //    }
-                        //});
-                    }
-                    if ((DateTime.Now - now).TotalMilliseconds >= 1000)
-                    {
-                        now = DateTime.Now;
-                        Console.Out.WriteLine("{0} requests and {1} responses and {2} calls per second", requests, responses, calls);
+                        if (requests > 0)
+                        {
+                            var diff = (DateTime.Now - start).TotalMilliseconds;
+                            Console.Out.WriteLine("{0} successes {1} errors, complete in {2}ms, speed: {3} ops/sec", responses, errors, diff, Math.Round(chuck/diff*1000, 2));
+                        }
+                        start = DateTime.Now;
                         requests = 0;
                         responses = 0;
+                        errors = 0;
                         calls = 0;
+
+                        complete = 0;
+                        var cache = ESBClient.stringToByteArray("{\"a\":2,\"b\":3}");
+                        for (var i = 0; i < chuck; i++)
+                        {
+                            requests++;
+                            ESBClient.Invoke("/math/plus", 1, cache, (errCode, data, err) =>
+                            {
+                                complete++;
+                                if (errCode == ErrorCodes.OK)
+                                {
+                                    responses++;
+                                    //var resp = System.Text.Encoding.UTF8.GetString(data);
+                                    //Console.Out.WriteLine("2+3={0}", resp);
+                                }
+                                else
+                                {
+                                    //Console.Out.WriteLine("error response: {0}", err);
+                                    errors++;
+                                }
+                            });
+                        }
                     }
                 }
                 Thread.Sleep(500);
