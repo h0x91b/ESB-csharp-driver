@@ -32,19 +32,19 @@ namespace ESBClient
                     for (var i = 0; i < 15000; i++)
                     {
                         requests++;
-                        ESBClient.Invoke("/math/plus", 1, ESBClient.stringToByteArray("{\"a\":2,\"b\":3}"), (errCode, data, err) =>
-                        {
-                            responses++;
-                            if (errCode == ErrorCodes.OK)
-                            {
-                                var resp = System.Text.Encoding.UTF8.GetString(data);
-                                //Console.Out.WriteLine("2+3={0}", resp);
-                            }
-                            else
-                            {
-                                Console.Out.WriteLine("error response: {0}", err);
-                            }
-                        });
+                        //ESBClient.Invoke("/math/plus", 1, ESBClient.stringToByteArray("{\"a\":2,\"b\":3}"), (errCode, data, err) =>
+                        //{
+                        //    responses++;
+                        //    if (errCode == ErrorCodes.OK)
+                        //    {
+                        //        var resp = System.Text.Encoding.UTF8.GetString(data);
+                        //        //Console.Out.WriteLine("2+3={0}", resp);
+                        //    }
+                        //    else
+                        //    {
+                        //        Console.Out.WriteLine("error response: {0}", err);
+                        //    }
+                        //});
                     }
                     if ((DateTime.Now - now).TotalMilliseconds >= 1000)
                     {
