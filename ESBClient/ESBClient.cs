@@ -1,4 +1,5 @@
-﻿using ProtoBuf;
+﻿using Newtonsoft.Json;
+using ProtoBuf;
 using ServiceStack.Redis;
 using System;
 using System.Collections;
@@ -310,7 +311,7 @@ namespace ESBClient
     delegate void InternalInvokeCallback(Message msg);
     public delegate void InvokeCallback(ErrorCodes errCode, byte[] payload, string err);
     public delegate void InvokeResponderCallback(string err, byte[] data);
-    public delegate void InvokeResponder(byte[] data, InvokeResponderCallback cb);
+    public delegate void InvokeResponder(Hashtable ht, InvokeResponderCallback cb);
 
     internal class ResponseStruct
     {
@@ -544,7 +545,9 @@ namespace ESBClient
         {
             try
             {
-                localMethods[msg.guid_to].method(msg.payload, (err, resp) => {
+                var payload = System.Text.Encoding.UTF8.GetString(msg.payload);
+                var ht = JsonConvert.DeserializeObject<Hashtable>(payload, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include, FloatParseHandling = FloatParseHandling.Decimal });
+                localMethods[msg.guid_to].method(ht, (err, resp) => {
                     //Console.Out.WriteLine("response from local method");
                     if (err != null)
                     {
