@@ -372,31 +372,13 @@ namespace ESBClient
 
         static void Ping()
         {
-            var cmdGuid = genGuid();
             var msgReq = new Message
             {
                 cmd = Message.Cmd.PING,
-                guid_from = cmdGuid,
+                guid_from = "",
                 payload = stringToByteArray("Ping!!!"),
                 source_proxy_guid = guid
             };
-            var s = new ResponseStruct
-            {
-                callback = (errCode, data, err) =>
-                {
-                    if (data != null)
-                    {
-                        isReady = true;
-                        string response = System.Text.Encoding.UTF8.GetString(data);
-                    }
-                    //Console.Out.WriteLine("response {0}", response);
-                },
-                reqTime = DateTime.Now.AddMilliseconds(1000)
-            };
-            //responsesMutex.WaitOne();
-            while (!responses.TryAdd(cmdGuid, s))
-                Thread.Sleep(1);
-            //responsesMutex.ReleaseMutex();
             publisher.Publish(proxyGuid, ref msgReq);
         }
 
@@ -609,8 +591,13 @@ namespace ESBClient
                         switch (msg.cmd)
                         {
                             case Message.Cmd.INVOKE:
-                                //InvokeCall(msg);
                                 InvokeCallBag.Add(msg);
+                                break;
+                            case Message.Cmd.PING:
+                                Pong(msg);
+                                break;
+                            case Message.Cmd.PONG:
+                                lastESBServerActiveTime = DateTime.Now;
                                 break;
                             case Message.Cmd.RESPONSE:
                                 Response(msg);
@@ -668,6 +655,19 @@ namespace ESBClient
             }
         }
 
+        private static void Pong(Message cmdReq)
+        {
+            //Console.Out.WriteLine("Got ping from {0}", cmdReq.source_proxy_guid);
+            var respMsg = new Message
+            {
+                cmd = Message.Cmd.PONG,
+                payload = stringToByteArray("\"pong!\""), //this is JSON encoded string
+                source_proxy_guid = guid,
+                guid_to = cmdReq.guid_from
+            };
+            publisher.Publish(cmdReq.source_proxy_guid, ref respMsg);
+        }
+
         private static void CleanUpDeadCallbacks()
         {
             //responsesMutex.WaitOne();
@@ -700,7 +700,6 @@ namespace ESBClient
                 }
                 Console.Out.WriteLine("Removed {0} dead callbacks", l.Count);
             }
-            //responsesMutex.ReleaseMutex();
         }
 
         private static bool Connect()
