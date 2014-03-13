@@ -14,7 +14,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using ZeroMQ;
 
-namespace ESBClient
+namespace ESB
 {
     [ProtoContract]
     public class RegistryEntry
@@ -92,7 +92,7 @@ namespace ESBClient
         public int traffic = 0;
         ZmqContext ctx = null;
         ZmqSocket socket = null;
-        private static ConcurrentBag<byte[]> PublishBag;
+        private ConcurrentBag<byte[]> PublishBag;
 
         public Publisher(string _hostName, int _port)
         {
@@ -104,8 +104,8 @@ namespace ESBClient
             socket = ctx.CreateSocket(SocketType.PUB);
             var str = String.Format("tcp://*:{0}", port);
             socket.Bind(str);
-            socket.SendHighWatermark = 1000000;
-            socket.SendBufferSize = 512 * 1024;
+            socket.SendHighWatermark = 100000;
+            socket.SendBufferSize = 256 * 1024;
         }
 
         public void Publish(string channel, ref Message msg)
@@ -138,10 +138,6 @@ namespace ESBClient
             {
                 if (!PublishBag.TryTake(out buf))
                 {
-                    if (PublishBag.Count < 100)
-                    {
-                        return;
-                    }
                     continue;
                 }
                 int rc = socket.Send(buf, buf.Length, SocketFlags.DontWait);
@@ -155,11 +151,13 @@ namespace ESBClient
     {
         public IPEndPoint ep { get; internal set; }
         public string guid { get; internal set; }
-        public Requester(string _guid, string connectionString)
+        int publisherPort;
+        public Requester(string _guid, string connectionString, int _publisherPort)
         {
             var t = connectionString.Split(':');
             ep = Parse(connectionString);
             guid = _guid;
+            publisherPort = _publisherPort;
         }
 
         public string GetSubscriberConnectionString()
@@ -168,7 +166,7 @@ namespace ESBClient
             socket.Connect(ep);
 
             var buf = new byte[1024];
-            var uBytes = Encoding.Unicode.GetBytes(String.Format("{0}#{1}", ESBClient.publisherPort, ESBClient.guid));
+            var uBytes = Encoding.Unicode.GetBytes(String.Format("{0}#{1}", publisherPort, guid));
             byte[] payload = Encoding.Convert(Encoding.Unicode, Encoding.ASCII, uBytes);
             socket.Send(payload);
             int len = socket.Receive(buf);
@@ -274,20 +272,22 @@ namespace ESBClient
         ZmqSocket socket;
         byte[] buf;
         public int traffic = 0;
-        public Subscriber(string _connectionString, string _proxyGuid) 
+        List<string> channels;
+        public Subscriber(string _connectionString, string _proxyGuid, string ESBClientGuid) 
         {
             connectionString = _connectionString;
             buf = new byte[65536];
 
             ctx = ZmqContext.Create();
             socket = ctx.CreateSocket(SocketType.SUB);
-            var binGuid = ESBClient.stringToByteArray(ESBClient.guid);
+            var binGuid = ESBClient.stringToByteArray(ESBClientGuid);
+            channels = new List<string>();
             //socket.SubscribeAll();
             //socket.Subscribe(ASCIIEncoding.ASCII.GetBytes(""));
             socket.Subscribe(binGuid);
             socket.Connect(connectionString);
-            socket.ReceiveHighWatermark = 1000000;
-            socket.ReceiveBufferSize = 512 * 1024;
+            socket.ReceiveHighWatermark = 100000;
+            socket.ReceiveBufferSize = 256 * 1024;
         }
 
         public Message Poll()
@@ -306,12 +306,20 @@ namespace ESBClient
             var respMsg = Serializer.Deserialize<Message>(stream);
             return respMsg;
         }
+
+        public void Subscribe(string channel)
+        {
+            if (channels.Contains(channel)) return;
+            channels.Add(channel);
+            socket.Subscribe(ESBClient.stringToByteArray(channel+"\t"));
+        }
     }
 
     delegate void InternalInvokeCallback(Message msg);
     public delegate void InvokeCallback(ErrorCodes errCode, byte[] payload, string err);
     public delegate void InvokeResponderCallback(string err, byte[] data);
     public delegate void InvokeResponder(Hashtable ht, InvokeResponderCallback cb);
+    public delegate void SubscribeCallback(string channel, byte[] data);
 
     internal class ResponseStruct
     {
@@ -326,42 +334,57 @@ namespace ESBClient
         public InvokeResponder method;
     }
 
-    public static class ESBClient
+    public class ESBClient
     {
-        public static bool isReady { get; internal set; }
-        public static bool isConnecting { get; internal set; }
-        public static string guid { get; internal set; }
-        public static int publisherPort { get; internal set; }
-        public static string proxyGuid { get; internal set; }
-        private static BlockingCollection<Message> InvokeCallBag;
-        readonly static RedisClient redis = new RedisClient("esb-redis", 6379);
-        static Requester requester = null;
-        static Publisher publisher = null;
-        static Subscriber subscriber = null;
-        static ConcurrentDictionary<string, ResponseStruct> responses = null;
-        static Dictionary<string, LocalInvokeMethod> localMethods = null;
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        public bool isReady { get; internal set; }
+        public bool isConnecting { get; internal set; }
+        public string guid { get; internal set; }
+        public int publisherPort { get; internal set; }
+        public string proxyGuid { get; internal set; }
+        public string registryRedisAddr { get; internal set; }
+        private BlockingCollection<Message> InvokeCallBag;
+        readonly RedisClient redis;
+        Requester requester = null;
+        Publisher publisher = null;
+        Subscriber subscriber = null;
+        ConcurrentDictionary<string, ResponseStruct> responses = null;
+        Dictionary<string, LocalInvokeMethod> localMethods = null;
+        Dictionary<string, Dictionary<string, SubscribeCallback>> subscribeCallbacks;
         static Random random;
-        static DateTime lastESBServerActiveTime;
+        DateTime lastESBServerActiveTime;
+        List<string> channels;
         static ESBClient()
         {
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
+        }
+        public ESBClient(string _registryRedisAddr)
+        {
             lastESBServerActiveTime = DateTime.Now;
             isReady = false;
             guid = genGuid();
-            Console.Out.WriteLine("new ESBClient {0}", guid);
+            log.InfoFormat("new ESBClient {0}", guid);
+            registryRedisAddr = _registryRedisAddr;
+            redis = new RedisClient(registryRedisAddr, 6379);
             responses = new ConcurrentDictionary<string, ResponseStruct>();
             InvokeCallBag = new BlockingCollection<Message>(new ConcurrentBag<Message>());
             localMethods = new Dictionary<string, LocalInvokeMethod>();
+            subscribeCallbacks = new Dictionary<string, Dictionary<string, SubscribeCallback>>();
+            channels = new List<string>();
             publisherPort = 7777;
-            publisher = new Publisher("Arseny-PC02.Toyga.local", publisherPort);
+            publisher = new Publisher(GetFQDN(), publisherPort);
             
             while (isConnecting || !Connect())
             {
                 Thread.Sleep(250);
             }
-            Console.Out.WriteLine("Connected");
+            isReady = true;
+            log.InfoFormat("Connected");
             (new Thread(new ThreadStart(MainLoop))).Start();
 
+            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
+            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
+            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
             (new Thread(new ThreadStart(InvokeCallWorker))).Start();
             (new Thread(new ThreadStart(InvokeCallWorker))).Start();
             (new Thread(new ThreadStart(InvokeCallWorker))).Start();
@@ -370,7 +393,58 @@ namespace ESBClient
 
         }
 
-        static void Ping()
+        void GotPublish(Message msg)
+        {
+            if (log.IsDebugEnabled) log.DebugFormat("Got publish on channel {0}", msg.identifier);
+            var channel = msg.identifier;
+            if (!subscribeCallbacks.ContainsKey(channel) || subscribeCallbacks[channel].Count < 1)
+            {
+                log.ErrorFormat("We are get message on channel `{0}` but no listeners here!", channel);
+                return;
+            }
+
+            var dict = subscribeCallbacks[channel];
+
+            foreach (var c in dict)
+            {
+                try
+                {
+                    c.Value(channel, msg.payload);
+                }
+                catch (Exception e)
+                {
+                    log.ErrorFormat("Exception on subscriber callback: {0}", e);
+                }
+            }
+        }
+
+        public string Subscribe(string channel, SubscribeCallback cb)
+        {
+            subscriber.Subscribe(channel);
+
+            var callbackGuid = genGuid();
+
+            if (!subscribeCallbacks.ContainsKey(channel))
+                subscribeCallbacks[channel] = new Dictionary<string, SubscribeCallback>();
+
+            subscribeCallbacks[channel][callbackGuid] = cb;
+
+            if (channels.Contains(channel)) return callbackGuid;
+            
+            channels.Add(channel);
+            var msg = new Message
+            {
+                cmd = Message.Cmd.SUBSCRIBE,
+                source_proxy_guid = guid,
+                identifier = channel,
+                payload = stringToByteArray(".")
+            };
+
+            publisher.Publish(proxyGuid, ref msg);
+            return callbackGuid;
+        }
+
+        void Ping()
         {
             var msgReq = new Message
             {
@@ -382,7 +456,7 @@ namespace ESBClient
             publisher.Publish(proxyGuid, ref msgReq);
         }
 
-        public static string Register(string identifier, UInt32 version, InvokeResponder callback)
+        public string Register(string identifier, UInt32 version, InvokeResponder callback)
         {
             var methodGuid = genGuid();
             localMethods[methodGuid] = new LocalInvokeMethod
@@ -404,7 +478,20 @@ namespace ESBClient
             return methodGuid;
         }
 
-        public static string Invoke(string identifier, UInt32 version, byte[] payload, InvokeCallback cb)
+        public void Publish(string channel, byte[] payload)
+        {
+            var msg = new Message
+            {
+                cmd = Message.Cmd.PUBLISH,
+                payload = payload,
+                source_proxy_guid = guid,
+                identifier = channel
+            };
+
+            publisher.Publish(channel, ref msg);
+        }
+
+        public string Invoke(string identifier, UInt32 version, byte[] payload, InvokeCallback cb)
         {
             string cmdGuid = genGuid();
 
@@ -412,22 +499,13 @@ namespace ESBClient
             {
                 callback = (errCode, data, err) =>
                 {
-                    //if (data != null)
-                    //{
-                    //    string response = System.Text.Encoding.UTF8.GetString(data);
-                    //    //Console.Out.WriteLine("response data: {0}", response);
-                    //}
-                    //else
-                    //{
-                    //    Console.Out.WriteLine("response errCode:{0}, err: {1}", errCode, err);
-                    //}
                     try
                     {
                         cb(errCode, data, err);
                     }
                     catch (Exception e)
                     {
-                        Console.Out.WriteLine("Exception in invoke callback: {0}", e.ToString());
+                        log.ErrorFormat("Exception in invoke callback: {0}", e.ToString());
                     }
                 },
                 reqTime = DateTime.Now.AddMilliseconds(30000)
@@ -449,14 +527,14 @@ namespace ESBClient
             return cmdGuid;
         }
 
-        private static void Response(Message respMsg)
+        private void Response(Message respMsg)
         {
             try
             {
                 //responsesMutex.WaitOne();
                 if(!responses.ContainsKey(respMsg.guid_to))
                 {
-                    Console.Out.WriteLine("Requested callback not found: {0} {1}", respMsg.guid_to, respMsg);
+                    log.WarnFormat("Requested callback not found: {0} {1}", respMsg.guid_to, respMsg);
                     //responsesMutex.ReleaseMutex();
                     return;
                 }
@@ -489,11 +567,11 @@ namespace ESBClient
             }
             catch (Exception e)
             {
-                Console.Out.WriteLine("Error on callback", e.ToString());
+                log.ErrorFormat("Error on callback", e.ToString());
             }
         }
 
-        private static void SendLocalMethods()
+        private void SendLocalMethods()
         {
             foreach (var m in localMethods)
             {
@@ -509,28 +587,26 @@ namespace ESBClient
             }
         }
 
-        private static void InvokeCallWorker()
+        private void InvokeCallWorker()
         {
             Message msg;
+            var calls = 0;
+            Thread.CurrentThread.Name = "Invoke Worker";
             while (true)
             {
-
-
-                msg = InvokeCallBag.Take();                
+                msg = InvokeCallBag.Take();
                 InvokeCall(msg);
-                
-                
+                calls++;
             }
         }
 
-        private static void InvokeCall(Message msg)
+        private void InvokeCall(Message msg)
         {
             try
             {
                 var payload = System.Text.Encoding.UTF8.GetString(msg.payload);
                 var ht = JsonConvert.DeserializeObject<Hashtable>(payload, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include, FloatParseHandling = FloatParseHandling.Decimal });
                 localMethods[msg.guid_to].method(ht, (err, resp) => {
-                    //Console.Out.WriteLine("response from local method");
                     if (err != null)
                     {
                         var errRespMsg = new Message
@@ -568,19 +644,20 @@ namespace ESBClient
             }
         }
 
-        private static void MainLoop()
+        private void MainLoop()
         {
             int messages = 0;
             int totalMessages = 0;
             int cycles = 0;
             var now = DateTime.Now;
             var lastCleanUpTime = DateTime.Now;
+            var isSomethingHappen = false;
             while (true)
             {
                 cycles++;
                 try
                 {
-                    var isSomethingHappen = false;
+                    isSomethingHappen = false;
                     var msg = subscriber.Poll();
                     while (msg != null)
                     {
@@ -610,6 +687,9 @@ namespace ESBClient
                                 break;
                             case Message.Cmd.REGISTER_INVOKE_OK:
                                 break;
+                            case Message.Cmd.PUBLISH:
+                                GotPublish(msg);
+                                break;
                             default:
                                 throw new Exception("Unknown command received!");
                         }
@@ -619,7 +699,6 @@ namespace ESBClient
                     publisher.Flush();
                     if ((cycles % 250 == 0) && (DateTime.Now - now).TotalMilliseconds > 1000)
                     {
-                        //Console.Out.WriteLine("1 sec passed, received {0} responses ({1} KB out / {2} KB in) {3} requests", messages, publisher.traffic / 1024, subscriber.traffic / 1024, requests);
                         messages = 0;
                         publisher.traffic = 0;
                         subscriber.traffic = 0;
@@ -633,15 +712,15 @@ namespace ESBClient
                         CleanUpDeadCallbacks();
                     }
 
-                    if ((cycles % 250 == 0) && (DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 3000)
+                    if ((cycles % 250 == 0) && (DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 100000)
                     {
-                        Console.Out.WriteLine("More then 3 second there is no activity from ESB server, probaly it is dead...");
+                        log.ErrorFormat("More then 100 second there is no activity from ESB server, probaly it is dead...");
                         isConnecting = false;
                         while (isConnecting || !Connect())
                         {
                             Thread.Sleep(50);
                         }
-                        Console.Out.WriteLine("Connected");
+                        log.InfoFormat("Connected");
                         lastESBServerActiveTime = DateTime.Now;
                     }
 
@@ -649,15 +728,14 @@ namespace ESBClient
                 }
                 catch (Exception e)
                 {
-                    Console.Out.WriteLine("Exception in MainLoop: {0}", e.ToString());
+                    log.ErrorFormat("Exception in MainLoop: {0}", e.ToString());
                     Thread.Sleep(250);
                 }
             }
         }
 
-        private static void Pong(Message cmdReq)
+        private void Pong(Message cmdReq)
         {
-            //Console.Out.WriteLine("Got ping from {0}", cmdReq.source_proxy_guid);
             var respMsg = new Message
             {
                 cmd = Message.Cmd.PONG,
@@ -668,9 +746,8 @@ namespace ESBClient
             publisher.Publish(cmdReq.source_proxy_guid, ref respMsg);
         }
 
-        private static void CleanUpDeadCallbacks()
+        private void CleanUpDeadCallbacks()
         {
-            //responsesMutex.WaitOne();
             var l = new List<string>();
             var now = DateTime.Now;
             foreach (var g in responses)
@@ -690,7 +767,7 @@ namespace ESBClient
                         cb(ErrorCodes.SERVICE_TIMEOUT, null, "Timeout on service call");
                     } catch(Exception e)
                     {
-                        Console.Out.WriteLine("Error while executing callback: {0}", e.ToString());
+                        log.ErrorFormat("Error while executing callback: {0}", e.ToString());
                     }
                     ResponseStruct tmp;
                     while (!responses.TryRemove(g,out tmp))
@@ -698,11 +775,11 @@ namespace ESBClient
                         Thread.Sleep(1);
                     }
                 }
-                Console.Out.WriteLine("Removed {0} dead callbacks", l.Count);
+                log.WarnFormat("Removed {0} dead callbacks", l.Count);
             }
         }
 
-        private static bool Connect()
+        private bool Connect()
         {
             if (isConnecting) return false;
             isConnecting = true;
@@ -718,16 +795,22 @@ namespace ESBClient
                 string _proxyGuid = r[0];
                 proxyGuid = _proxyGuid;
                 string connectionString = r[1];
-                requester = new Requester(guid, connectionString);
+                requester = new Requester(guid, connectionString, publisherPort);
                 var sub = requester.GetSubscriberConnectionString();
                 if (sub == String.Empty) return false;
-                subscriber = new Subscriber(sub, _proxyGuid);
+                subscriber = new Subscriber(sub, _proxyGuid, guid);
                 isConnecting = false;
+
+                foreach (var c in channels)
+                {
+                    subscriber.Subscribe(c);
+                }
+
                 return true;
             }
             catch (System.Exception e)
             {
-                Console.Out.WriteLine("Esception on ESBClient.Connect(): {0}", e.ToString());
+                log.ErrorFormat("Exception on ESBClient.Connect(): {0}", e.ToString());
                 isConnecting = false;
                 return false;
             }
@@ -738,6 +821,11 @@ namespace ESBClient
             var uBytes = Encoding.Unicode.GetBytes(str);
             byte[] bytes = Encoding.Convert(Encoding.Unicode, Encoding.ASCII, uBytes);
             return bytes;
+        }
+
+        public static string byteArrayToString(byte[] data) 
+        {
+            return System.Text.Encoding.UTF8.GetString(data);
         }
 
         public static string genGuid()
@@ -753,6 +841,21 @@ namespace ESBClient
             }
 
             return new String(stringChars);
+        }
+
+        public static string GetFQDN()
+        {
+            string domainName = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().DomainName;
+            string hostName = Dns.GetHostName();
+            string fqdn = "";
+            if (!hostName.Contains(domainName))
+                fqdn = hostName + "." + domainName;
+            else
+                fqdn = hostName;
+
+            log.DebugFormat("GetFQDN returns - `{0}`", fqdn);
+
+            return fqdn;
         }
     }
 }
