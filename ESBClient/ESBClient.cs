@@ -1,5 +1,4 @@
-﻿using Newtonsoft.Json;
-using ProtoBuf;
+﻿using ProtoBuf;
 using ServiceStack.Redis;
 using System;
 using System.Collections;
@@ -318,7 +317,7 @@ namespace ESB
     delegate void InternalInvokeCallback(Message msg);
     public delegate void InvokeCallback(ErrorCodes errCode, byte[] payload, string err);
     public delegate void InvokeResponderCallback(string err, byte[] data);
-    public delegate void InvokeResponder(Hashtable ht, InvokeResponderCallback cb);
+    public delegate void InvokeResponder(Dictionary<string, object> ht, InvokeResponderCallback cb);
     public delegate void SubscribeCallback(string channel, byte[] data);
 
     internal class ResponseStruct
@@ -605,7 +604,9 @@ namespace ESB
             try
             {
                 var payload = System.Text.Encoding.UTF8.GetString(msg.payload);
-                var ht = JsonConvert.DeserializeObject<Hashtable>(payload, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include, FloatParseHandling = FloatParseHandling.Decimal });
+                var ser = new ServiceStack.Text.JsonSerializer<Dictionary<string, object>>();
+                var ht = ser.DeserializeFromString(payload);
+                //var ht = JsonConvert.DeserializeObject<Hashtable>(payload, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include, FloatParseHandling = FloatParseHandling.Decimal });
                 localMethods[msg.guid_to].method(ht, (err, resp) => {
                     if (err != null)
                     {
