@@ -38,28 +38,26 @@
     <StartupObject />
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="clrzmq, Version=3.0.0.0, Culture=neutral, PublicKeyToken=ef95cdc29d237b0d, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\clrzmq.3.0.0-rc1\lib\net40\clrzmq.dll</HintPath>
+    <Reference Include="clrzmq">
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\clrzmq.3.0.0-rc1\lib\net40\clrzmq.dll</HintPath>
     </Reference>
-    <Reference Include="log4net, Version=1.2.11.0, Culture=neutral, PublicKeyToken=669e0ddf0bb1aa2a, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\packages\Toyga.log4net.1.2.11.0\lib\log4net.dll</HintPath>
+    <Reference Include="log4net">
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\Toyga.log4net.1.2.11.0\lib\log4net.dll</HintPath>
     </Reference>
     <Reference Include="protobuf-net">
-      <HintPath>..\packages\protobuf-net.2.0.0.668\lib\net40\protobuf-net.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\protobuf-net.2.0.0.668\lib\net40\protobuf-net.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Common">
-      <HintPath>..\packages\ServiceStack.Common.4.0.11\lib\net40\ServiceStack.Common.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Common.4.0.12\lib\net40\ServiceStack.Common.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Interfaces">
-      <HintPath>..\packages\ServiceStack.Interfaces.4.0.11\lib\net40\ServiceStack.Interfaces.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Interfaces.4.0.12\lib\net40\ServiceStack.Interfaces.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Redis">
-      <HintPath>..\packages\ServiceStack.Redis.4.0.11\lib\net40\ServiceStack.Redis.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Redis.4.0.12\lib\net40\ServiceStack.Redis.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Text">
-      <HintPath>..\packages\ServiceStack.Text.4.0.11\lib\net40\ServiceStack.Text.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Text.4.0.12\lib\net40\ServiceStack.Text.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -77,8 +75,6 @@
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Import Project="$(ProjectDir)\..\.nuget\nuget.targets" />
-  <Import Project="$(SolutionDir)\.nuget\nuget.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.
   <Target Name="BeforeBuild">
