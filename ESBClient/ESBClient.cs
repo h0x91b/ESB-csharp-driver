@@ -20,58 +20,62 @@ namespace ESB
     {
         public enum RegistryEntryType
         {
-            INVOKE_METHOD = 1
+            INVOKE_METHOD = 1,
+            QUEUE = 2
         };
         [ProtoMember(1, IsRequired = true)]
         public RegistryEntryType type { get; set; }
-        [ProtoMember(2, IsRequired=true)]
+        [ProtoMember(2, IsRequired = true)]
         public string identifier { get; set; }
         [ProtoMember(3, IsRequired = true)]
         public string method_guid { get; set; }
         [ProtoMember(4, IsRequired = true)]
         public string proxy_guid { get; set; }
+        [ProtoMember(5, IsRequired = false)]
+        public string queue_name { get; set; }
     }
     [ProtoContract]
     public class Message
     {
-        public enum Cmd { 
+        public enum Cmd
+        {
             ERROR = 1,
-		    RESPONSE = 2,
-		    ERROR_RESPONSE = 3,
-		    NODE_HELLO = 4,
-		    PROXY_HELLO = 5,
-		    PING = 6,
-		    PONG = 7,
-		    INVOKE = 8,
-		    REGISTER_INVOKE = 9,
-		    REGISTER_INVOKE_OK = 10,
-		    REGISTRY_EXCHANGE_REQUEST = 11,
-		    REGISTRY_EXCHANGE_RESPONSE = 12,
-		    PUBLISH = 13,
-		    SUBSCRIBE = 14 
+            RESPONSE = 2,
+            ERROR_RESPONSE = 3,
+            NODE_HELLO = 4,
+            PING = 5,
+            PONG = 6,
+            INVOKE = 7,
+            REGISTER_INVOKE = 8,
+            REGISTER_INVOKE_OK = 9,
+            REGISTRY_EXCHANGE_REQUEST = 10,
+            REGISTRY_EXCHANGE_RESPONSE = 11,
+            PUBLISH = 12,
+            SUBSCRIBE = 13,
+            REG_QUEUE = 14,
+            UNREG_QUEUE = 15,
+            PEEK_QUEUE = 16,
+            DEQUEUE_QUEUE = 17,
+            LEN_QUEUE = 18
         }
 
         [ProtoMember(1, IsRequired = true)]
         public Cmd cmd { get; set; }
         [ProtoMember(2, IsRequired = true)]
-        public string source_proxy_guid { get; set; }
+        public string source_component_guid { get; set; }
         [ProtoMember(3, IsRequired = true)]
         public byte[] payload { get; set; }
         [ProtoMember(4)]
-        public string target_proxy_guid { get; set; }
+        public string target_component_guid { get; set; }
         [ProtoMember(5)]
         public string identifier { get; set; }
         [ProtoMember(6)]
-        public string guid_from { get; set; }
+        public string source_operation_guid { get; set; }
         [ProtoMember(7)]
-        public string guid_to { get; set; }
+        public string target_operation_guid { get; set; }
         [ProtoMember(8)]
         public Int32 recursion { get; set; }
         [ProtoMember(9)]
-        public UInt32 start_time { get; set; }
-        [ProtoMember(10)]
-        public Int32 timeout_ms { get; set; }
-        [ProtoMember(11)]
         public List<RegistryEntry> reg_entry { get; set; }
     }
 
@@ -381,15 +385,13 @@ namespace ESB
             log.InfoFormat("Connected");
             (new Thread(new ThreadStart(MainLoop))).Start();
 
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-            (new Thread(new ThreadStart(InvokeCallWorker))).Start();
-
+            var cpus = Environment.ProcessorCount;
+            var workers = cpus * 1;
+            log.InfoFormat("Machine have {0} cores, using {1} workers", cpus, workers);
+            for (var i = 0; i < workers; i++)
+            {
+                (new Thread(new ThreadStart(InvokeCallWorker))).Start();
+            }
         }
 
         void GotPublish(Message msg)
@@ -434,7 +436,7 @@ namespace ESB
             var msg = new Message
             {
                 cmd = Message.Cmd.SUBSCRIBE,
-                source_proxy_guid = guid,
+                source_component_guid = guid,
                 identifier = channel,
                 payload = stringToByteArray(".")
             };
@@ -448,9 +450,9 @@ namespace ESB
             var msgReq = new Message
             {
                 cmd = Message.Cmd.PING,
-                guid_from = "",
+                source_operation_guid = "",
                 payload = stringToByteArray("Ping!!!"),
-                source_proxy_guid = guid
+                source_component_guid = guid
             };
             publisher.Publish(proxyGuid, ref msgReq);
         }
@@ -468,7 +470,7 @@ namespace ESB
             var msg = new Message {
                 cmd = Message.Cmd.REGISTER_INVOKE,
                 payload = stringToByteArray(methodGuid),
-                source_proxy_guid = guid,
+                source_component_guid = guid,
                 identifier = identifier + "/v" + version
             };
 
@@ -483,7 +485,7 @@ namespace ESB
             {
                 cmd = Message.Cmd.PUBLISH,
                 payload = payload,
-                source_proxy_guid = guid,
+                source_component_guid = guid,
                 identifier = channel
             };
 
@@ -507,15 +509,17 @@ namespace ESB
                         log.ErrorFormat("Exception in invoke callback: {0}", e.ToString());
                     }
                 },
-                reqTime = DateTime.Now.AddMilliseconds(30000)
+#warning: ToDo - Take request timeout from configuration
+
+                reqTime = DateTime.Now.AddMilliseconds(300000)
             };
             var msgReq = new Message
             {
                 cmd = Message.Cmd.INVOKE,
-                guid_from = cmdGuid,
+                source_operation_guid = cmdGuid,
                 identifier = identifier + "/v" + version,
                 payload = payload,
-                source_proxy_guid = guid
+                source_component_guid = guid
             };
 
             //responsesMutex.WaitOne();
@@ -531,17 +535,17 @@ namespace ESB
             try
             {
                 //responsesMutex.WaitOne();
-                if(!responses.ContainsKey(respMsg.guid_to))
+                if(!responses.ContainsKey(respMsg.target_operation_guid))
                 {
-                    log.WarnFormat("Requested callback not found: {0} {1}", respMsg.guid_to, respMsg);
+                    log.WarnFormat("Requested callback not found: {0} {1}", respMsg.target_operation_guid, respMsg);
                     //responsesMutex.ReleaseMutex();
                     return;
                 }
-                var resp = responses[respMsg.guid_to];
+                var resp = responses[respMsg.target_operation_guid];
                 
                 var cb = resp.callback;
                 ResponseStruct tmp;
-                while (!responses.TryRemove(respMsg.guid_to,out tmp))
+                while (!responses.TryRemove(respMsg.target_operation_guid,out tmp))
                 {
                     Thread.Sleep(1);
                 }
@@ -578,7 +582,7 @@ namespace ESB
                 {
                     cmd = Message.Cmd.REGISTER_INVOKE,
                     payload = stringToByteArray(m.Key),
-                    source_proxy_guid = guid,
+                    source_component_guid = guid,
                     identifier = m.Value.identifier
                 };
 
@@ -607,28 +611,28 @@ namespace ESB
                 var ser = new ServiceStack.Text.JsonSerializer<Dictionary<string, object>>();
                 var ht = ser.DeserializeFromString(payload);
                 //var ht = JsonConvert.DeserializeObject<Hashtable>(payload, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include, FloatParseHandling = FloatParseHandling.Decimal });
-                localMethods[msg.guid_to].method(ht, (err, resp) => {
+                localMethods[msg.target_operation_guid].method(ht, (err, resp) => {
                     if (err != null)
                     {
                         var errRespMsg = new Message
                         {
                             cmd = Message.Cmd.ERROR_RESPONSE,
-                            source_proxy_guid = guid,
-                            guid_to = msg.guid_from,
+                            source_component_guid = guid,
+                            target_operation_guid = msg.source_operation_guid,
                             payload = stringToByteArray(err)
                         };
-                        publisher.Publish(msg.source_proxy_guid, ref errRespMsg);
+                        publisher.Publish(msg.source_component_guid, ref errRespMsg);
                         return;
                     }
 
                     var respMsg = new Message
                     {
                         cmd = Message.Cmd.RESPONSE,
-                        source_proxy_guid = guid,
-                        guid_to = msg.guid_from,
+                        source_component_guid = guid,
+                        target_operation_guid = msg.source_operation_guid,
                         payload = resp
                     };
-                    publisher.Publish(msg.source_proxy_guid, ref respMsg);
+                    publisher.Publish(msg.source_component_guid, ref respMsg);
                     return;
                 });
             }
@@ -637,11 +641,11 @@ namespace ESB
                 var respMsg = new Message
                 {
                     cmd = Message.Cmd.ERROR_RESPONSE,
-                    source_proxy_guid = guid,
-                    guid_to = msg.guid_from,
+                    source_component_guid = guid,
+                    target_operation_guid = msg.source_operation_guid,
                     payload = stringToByteArray(String.Format("Exception: {0}", e.ToString()))
                 };
-                publisher.Publish(msg.source_proxy_guid, ref respMsg);
+                publisher.Publish(msg.source_component_guid, ref respMsg);
             }
         }
 
@@ -725,7 +729,12 @@ namespace ESB
                         lastESBServerActiveTime = DateTime.Now;
                     }
 
-                    if(!isSomethingHappen) Thread.Sleep(1);
+                    if(!isSomethingHappen)
+#if DEBUG
+                        Thread.Sleep(100);
+#else
+                        Thread.Sleep(1);
+#endif
                 }
                 catch (Exception e)
                 {
@@ -741,10 +750,10 @@ namespace ESB
             {
                 cmd = Message.Cmd.PONG,
                 payload = stringToByteArray("\"pong!\""), //this is JSON encoded string
-                source_proxy_guid = guid,
-                guid_to = cmdReq.guid_from
+                source_component_guid = guid,
+                target_operation_guid = cmdReq.source_operation_guid
             };
-            publisher.Publish(cmdReq.source_proxy_guid, ref respMsg);
+            publisher.Publish(cmdReq.source_component_guid, ref respMsg);
         }
 
         private void CleanUpDeadCallbacks()

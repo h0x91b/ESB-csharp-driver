@@ -48,16 +48,16 @@
       <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\protobuf-net.2.0.0.668\lib\net40\protobuf-net.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Common">
-      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Common.4.0.12\lib\net40\ServiceStack.Common.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\Toyga.ServiceStack.Redis.3.9.71.0\lib\ServiceStack.Common.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Interfaces">
-      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Interfaces.4.0.12\lib\net40\ServiceStack.Interfaces.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\Toyga.ServiceStack.Redis.3.9.71.0\lib\ServiceStack.Interfaces.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Redis">
-      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Redis.4.0.12\lib\net40\ServiceStack.Redis.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\Toyga.ServiceStack.Redis.3.9.71.0\lib\ServiceStack.Redis.dll</HintPath>
     </Reference>
     <Reference Include="ServiceStack.Text">
-      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\ServiceStack.Text.4.0.12\lib\net40\ServiceStack.Text.dll</HintPath>
+      <HintPath>..\..\..\Services\Paragonex.Services.PlatformServices\packages\Toyga.ServiceStack.Redis.3.9.71.0\lib\ServiceStack.Text.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -75,6 +75,7 @@
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="Exists('$(SolutionDir)\.nuget\NuGet.targets')" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.
   <Target Name="BeforeBuild">
