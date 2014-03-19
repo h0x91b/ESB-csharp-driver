@@ -87,7 +87,7 @@ namespace ESB
         SERVICE_TIMEOUT = 3
     }
 
-    internal class Publisher
+    internal class Publisher : IDisposable
     {
         public string connectionString { get; internal set; }
         public string hostName { get; internal set; }
@@ -109,6 +109,12 @@ namespace ESB
             socket.Bind(str);
             socket.SendHighWatermark = 100000;
             socket.SendBufferSize = 256 * 1024;
+        }
+
+        public void Dispose()
+        {
+            socket.Close();
+            socket.Dispose();
         }
 
         public void Publish(string channel, ref Message msg)
@@ -146,7 +152,6 @@ namespace ESB
                 int rc = socket.Send(buf, buf.Length, SocketFlags.DontWait);
                 traffic += buf.Length;
             }
-
         }
     }
 
@@ -267,7 +272,7 @@ namespace ESB
 
     }
 
-    internal class Subscriber
+    internal class Subscriber : IDisposable
     {
         public string connectionString { get; internal set; }
         public string proxyGuid { get; internal set; }
@@ -291,6 +296,12 @@ namespace ESB
             socket.Connect(connectionString);
             socket.ReceiveHighWatermark = 100000;
             socket.ReceiveBufferSize = 256 * 1024;
+        }
+
+        public void Dispose()
+        {
+            socket.Close();
+            socket.Dispose();
         }
 
         public Message Poll()
@@ -337,7 +348,7 @@ namespace ESB
         public InvokeResponder method;
     }
 
-    public class ESBClient
+    public class ESBClient : IDisposable
     {
         private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         public bool isReady { get; internal set; }
@@ -347,36 +358,60 @@ namespace ESB
         public string proxyGuid { get; internal set; }
         public string registryRedisAddr { get; internal set; }
         private BlockingCollection<Message> InvokeCallBag;
-        readonly RedisClient redis;
+        RedisClient redis;
         Requester requester = null;
         Publisher publisher = null;
         Subscriber subscriber = null;
         ConcurrentDictionary<string, ResponseStruct> responses = null;
         Dictionary<string, LocalInvokeMethod> localMethods = null;
         Dictionary<string, Dictionary<string, SubscribeCallback>> subscribeCallbacks;
+        List<Thread> workerList;
         static Random random;
         DateTime lastESBServerActiveTime;
         List<string> channels;
+        bool isWork;
         static ESBClient()
         {
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
         }
+
+        public ESBClient()
+        {
+            Init("plt-esbredis01.toyga.local", 6379, 7777);
+        }
+
         public ESBClient(string _registryRedisAddr)
+        {
+            Init(_registryRedisAddr, 6379, 7777);
+        }
+
+        public ESBClient(string _registryRedisAddr, int _redisPort)
+        {
+            Init(_registryRedisAddr, _redisPort, 7777);
+        }
+
+        public ESBClient(string _registryRedisAddr, int _redisPort, int _publisherPort)
+        {
+            Init(_registryRedisAddr, _redisPort, _publisherPort);
+        }
+
+        void Init(string _registryRedisAddr, int _redisPort, int _publisherPort)
         {
             lastESBServerActiveTime = DateTime.Now;
             isReady = false;
             guid = genGuid();
             log.InfoFormat("new ESBClient {0}", guid);
             registryRedisAddr = _registryRedisAddr;
-            redis = new RedisClient(registryRedisAddr, 6379);
+            redis = new RedisClient(registryRedisAddr, _redisPort);
             responses = new ConcurrentDictionary<string, ResponseStruct>();
             InvokeCallBag = new BlockingCollection<Message>(new ConcurrentBag<Message>());
             localMethods = new Dictionary<string, LocalInvokeMethod>();
             subscribeCallbacks = new Dictionary<string, Dictionary<string, SubscribeCallback>>();
             channels = new List<string>();
-            publisherPort = 7777;
+            publisherPort = _publisherPort;
             publisher = new Publisher(GetFQDN(), publisherPort);
-            
+            isWork = true;
+
             while (isConnecting || !Connect())
             {
                 Thread.Sleep(250);
@@ -388,11 +423,31 @@ namespace ESB
             var cpus = Environment.ProcessorCount;
             var workers = cpus * 1;
             log.InfoFormat("Machine have {0} cores, using {1} workers", cpus, workers);
+            workerList = new List<Thread>();
             for (var i = 0; i < workers; i++)
             {
-                (new Thread(new ThreadStart(InvokeCallWorker))).Start();
+                var t = new Thread(new ThreadStart(InvokeCallWorker));
+                workerList.Add(t);
+                t.Start();
             }
         }
+
+        public void Dispose()
+        {
+            log.InfoFormat("ESBClient {0} dispose", guid);
+            isWork = false;
+            foreach (var w in workerList)
+            {
+                w.Abort();
+            }
+            publisher.Dispose();
+            publisher = null;
+            subscriber.Dispose();
+            subscriber = null;
+            redis.Dispose();
+            redis = null;
+        }
+
 
         void GotPublish(Message msg)
         {
@@ -595,7 +650,7 @@ namespace ESB
             Message msg;
             var calls = 0;
             Thread.CurrentThread.Name = "Invoke Worker";
-            while (true)
+            while (isWork)
             {
                 msg = InvokeCallBag.Take();
                 InvokeCall(msg);
@@ -657,14 +712,14 @@ namespace ESB
             var now = DateTime.Now;
             var lastCleanUpTime = DateTime.Now;
             var isSomethingHappen = false;
-            while (true)
+            while (isWork)
             {
                 cycles++;
                 try
                 {
                     isSomethingHappen = false;
                     var msg = subscriber.Poll();
-                    while (msg != null)
+                    while (msg != null && isWork)
                     {
                         lastESBServerActiveTime = DateTime.Now;
                         isSomethingHappen = true;
