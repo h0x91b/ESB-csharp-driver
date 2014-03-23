@@ -108,7 +108,8 @@ namespace ESB
             var str = String.Format("tcp://*:{0}", port);
             socket.Bind(str);
             socket.SendHighWatermark = 100000;
-            socket.SendBufferSize = 256 * 1024;
+            socket.Backlog = 100000;
+            socket.SendBufferSize = 128 * 1024;
         }
 
         public void Dispose()
@@ -295,7 +296,7 @@ namespace ESB
             socket.Subscribe(binGuid);
             socket.Connect(connectionString);
             socket.ReceiveHighWatermark = 100000;
-            socket.ReceiveBufferSize = 256 * 1024;
+            socket.ReceiveBufferSize = 128 * 1024;
         }
 
         public void Dispose()
@@ -549,6 +550,11 @@ namespace ESB
 
         public string Invoke(string identifier, UInt32 version, byte[] payload, InvokeCallback cb)
         {
+            return Invoke(identifier, version, payload, cb, 30000);
+        }
+
+        public string Invoke(string identifier, UInt32 version, byte[] payload, InvokeCallback cb, int timeoutMs)
+        {
             string cmdGuid = genGuid();
 
             var s = new ResponseStruct
@@ -565,8 +571,7 @@ namespace ESB
                     }
                 },
 #warning: ToDo - Take request timeout from configuration
-
-                reqTime = DateTime.Now.AddMilliseconds(300000)
+                reqTime = DateTime.Now.AddMilliseconds(timeoutMs)
             };
             var msgReq = new Message
             {
@@ -710,7 +715,6 @@ namespace ESB
             int totalMessages = 0;
             int cycles = 0;
             var now = DateTime.Now;
-            var lastCleanUpTime = DateTime.Now;
             var isSomethingHappen = false;
             while (isWork)
             {
@@ -757,7 +761,7 @@ namespace ESB
                     }
 
                     publisher.Flush();
-                    if ((cycles % 250 == 0) && (DateTime.Now - now).TotalMilliseconds > 1000)
+                    if ((DateTime.Now - now).TotalMilliseconds > 1000)
                     {
                         messages = 0;
                         publisher.traffic = 0;
@@ -766,13 +770,8 @@ namespace ESB
                         Ping();
                         SendLocalMethods();
                     }
-                    if ((cycles % 250 == 0) && (DateTime.Now - lastCleanUpTime).TotalSeconds >= 30)
-                    {
-                        lastCleanUpTime = DateTime.Now;
-                        CleanUpDeadCallbacks();
-                    }
 
-                    if ((cycles % 250 == 0) && (DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 100000)
+                    if ((DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 100000)
                     {
                         log.ErrorFormat("More then 100 second there is no activity from ESB server, probaly it is dead...");
                         isConnecting = false;
@@ -784,12 +783,9 @@ namespace ESB
                         lastESBServerActiveTime = DateTime.Now;
                     }
 
+                    CleanUpDeadCallbacks();
                     if(!isSomethingHappen)
-#if DEBUG
-                        Thread.Sleep(100);
-#else
                         Thread.Sleep(1);
-#endif
                 }
                 catch (Exception e)
                 {
