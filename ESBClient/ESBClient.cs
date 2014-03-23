@@ -356,6 +356,7 @@ namespace ESB
         public bool isConnecting { get; internal set; }
         public string guid { get; internal set; }
         public int publisherPort { get; internal set; }
+        public int maxInactiveTimeInMsBeforeReconnect { get; internal set; }
         public string proxyGuid { get; internal set; }
         public string registryRedisAddr { get; internal set; }
         private BlockingCollection<Message> InvokeCallBag;
@@ -378,25 +379,30 @@ namespace ESB
 
         public ESBClient()
         {
-            Init("plt-esbredis01.toyga.local", 6379, 7777);
+            Init("plt-esbredis01.toyga.local", 6379, random.Next(7000, 8000), 30000);
         }
 
         public ESBClient(string _registryRedisAddr)
         {
-            Init(_registryRedisAddr, 6379, 7777);
+            Init(_registryRedisAddr, 6379, random.Next(7000, 8000), 30000);
         }
 
         public ESBClient(string _registryRedisAddr, int _redisPort)
         {
-            Init(_registryRedisAddr, _redisPort, 7777);
+            Init(_registryRedisAddr, _redisPort, random.Next(7000, 8000), 30000);
         }
 
         public ESBClient(string _registryRedisAddr, int _redisPort, int _publisherPort)
         {
-            Init(_registryRedisAddr, _redisPort, _publisherPort);
+            Init(_registryRedisAddr, _redisPort, _publisherPort, 30000);
         }
 
-        void Init(string _registryRedisAddr, int _redisPort, int _publisherPort)
+        public ESBClient(string _registryRedisAddr, int _redisPort, int _publisherPort, int _maxInactiveTimeInMsBeforeReconnect)
+        {
+            Init(_registryRedisAddr, _redisPort, _publisherPort, _maxInactiveTimeInMsBeforeReconnect);
+        }
+
+        void Init(string _registryRedisAddr, int _redisPort, int _publisherPort, int _maxInactiveTimeInMsBeforeReconnect)
         {
             lastESBServerActiveTime = DateTime.Now;
             isReady = false;
@@ -412,6 +418,7 @@ namespace ESB
             publisherPort = _publisherPort;
             publisher = new Publisher(GetFQDN(), publisherPort);
             isWork = true;
+            maxInactiveTimeInMsBeforeReconnect = _maxInactiveTimeInMsBeforeReconnect;
 
             while (isConnecting || !Connect())
             {
@@ -555,6 +562,19 @@ namespace ESB
 
         public string Invoke(string identifier, UInt32 version, byte[] payload, InvokeCallback cb, int timeoutMs)
         {
+            if (isConnecting || !isReady)
+            {
+                try
+                {
+                    cb(ErrorCodes.INTERNAL_SERVER_ERROR, null, "ESB client not connected");
+                }
+                catch (Exception e)
+                {
+                    log.ErrorFormat("Exception in invoke callback: {0}", e.ToString());
+                }
+                return string.Empty;
+            }
+
             string cmdGuid = genGuid();
 
             var s = new ResponseStruct
@@ -570,7 +590,6 @@ namespace ESB
                         log.ErrorFormat("Exception in invoke callback: {0}", e.ToString());
                     }
                 },
-#warning: ToDo - Take request timeout from configuration
                 reqTime = DateTime.Now.AddMilliseconds(timeoutMs)
             };
             var msgReq = new Message
@@ -771,14 +790,17 @@ namespace ESB
                         SendLocalMethods();
                     }
 
-                    if ((DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= 100000)
+                    if ((DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= maxInactiveTimeInMsBeforeReconnect)
                     {
-                        log.ErrorFormat("More then 100 second there is no activity from ESB server, probaly it is dead...");
+                        log.ErrorFormat("More then {0} second there is no activity from ESB server, probaly it is dead...", maxInactiveTimeInMsBeforeReconnect);
+                        isReady = false;
+                        FlushAllCallbacks();
                         isConnecting = false;
                         while (isConnecting || !Connect())
                         {
                             Thread.Sleep(50);
                         }
+                        isReady = true;
                         log.InfoFormat("Connected");
                         lastESBServerActiveTime = DateTime.Now;
                     }
@@ -837,6 +859,27 @@ namespace ESB
                     }
                 }
                 log.WarnFormat("Removed {0} dead callbacks", l.Count);
+            }
+        }
+
+        private void FlushAllCallbacks()
+        {
+            foreach (var g in responses.Keys)
+            {
+                var cb = responses[g].callback;
+                try
+                {
+                    cb(ErrorCodes.INTERNAL_SERVER_ERROR, null, "Connection to server have been lost");
+                }
+                catch (Exception e)
+                {
+                    log.ErrorFormat("Error while executing callback: {0}", e.ToString());
+                }
+                ResponseStruct tmp;
+                while (!responses.TryRemove(g, out tmp))
+                {
+                    Thread.Sleep(1);
+                }
             }
         }
 
