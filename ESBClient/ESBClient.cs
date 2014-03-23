@@ -349,6 +349,13 @@ namespace ESB
         public InvokeResponder method;
     }
 
+    public class ESBOptions
+    {
+       public int redisPort;
+       public int publisherPort;
+       public int maxInactiveTimeInMsBeforeReconnect;
+    }
+
     public class ESBClient : IDisposable
     {
         private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
@@ -379,46 +386,48 @@ namespace ESB
 
         public ESBClient()
         {
-            Init("plt-esbredis01.toyga.local", 6379, random.Next(7000, 8000), 30000);
+            Init("plt-esbredis01.toyga.local", new ESBOptions {
+                redisPort = 6379,
+                publisherPort = random.Next(7000, 8000),
+                maxInactiveTimeInMsBeforeReconnect = 15000
+            });
         }
 
         public ESBClient(string _registryRedisAddr)
         {
-            Init(_registryRedisAddr, 6379, random.Next(7000, 8000), 30000);
+            Init(_registryRedisAddr, new ESBOptions
+            {
+                redisPort = 6379,
+                publisherPort = random.Next(7000, 8000),
+                maxInactiveTimeInMsBeforeReconnect = 15000
+            });
         }
 
-        public ESBClient(string _registryRedisAddr, int _redisPort)
+        public ESBClient(string _registryRedisAddr, ESBOptions options)
         {
-            Init(_registryRedisAddr, _redisPort, random.Next(7000, 8000), 30000);
+            options.redisPort = options.redisPort > 0 ? options.redisPort : 6379;
+            options.publisherPort = options.redisPort > 0 ? options.publisherPort : random.Next(7000, 8000);
+            options.maxInactiveTimeInMsBeforeReconnect = options.maxInactiveTimeInMsBeforeReconnect > 0 ? options.maxInactiveTimeInMsBeforeReconnect : 15000;
+            Init(_registryRedisAddr, options);
         }
 
-        public ESBClient(string _registryRedisAddr, int _redisPort, int _publisherPort)
-        {
-            Init(_registryRedisAddr, _redisPort, _publisherPort, 30000);
-        }
-
-        public ESBClient(string _registryRedisAddr, int _redisPort, int _publisherPort, int _maxInactiveTimeInMsBeforeReconnect)
-        {
-            Init(_registryRedisAddr, _redisPort, _publisherPort, _maxInactiveTimeInMsBeforeReconnect);
-        }
-
-        void Init(string _registryRedisAddr, int _redisPort, int _publisherPort, int _maxInactiveTimeInMsBeforeReconnect)
+        void Init(string _registryRedisAddr, ESBOptions options)
         {
             lastESBServerActiveTime = DateTime.Now;
             isReady = false;
             guid = genGuid();
             log.InfoFormat("new ESBClient {0}", guid);
             registryRedisAddr = _registryRedisAddr;
-            redis = new RedisClient(registryRedisAddr, _redisPort);
+            redis = new RedisClient(registryRedisAddr, options.redisPort);
             responses = new ConcurrentDictionary<string, ResponseStruct>();
             InvokeCallBag = new BlockingCollection<Message>(new ConcurrentBag<Message>());
             localMethods = new Dictionary<string, LocalInvokeMethod>();
             subscribeCallbacks = new Dictionary<string, Dictionary<string, SubscribeCallback>>();
             channels = new List<string>();
-            publisherPort = _publisherPort;
+            publisherPort = options.publisherPort;
             publisher = new Publisher(GetFQDN(), publisherPort);
             isWork = true;
-            maxInactiveTimeInMsBeforeReconnect = _maxInactiveTimeInMsBeforeReconnect;
+            maxInactiveTimeInMsBeforeReconnect = options.maxInactiveTimeInMsBeforeReconnect;
 
             while (isConnecting || !Connect())
             {
