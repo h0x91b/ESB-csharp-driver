@@ -138,7 +138,7 @@ namespace ESB
             Array.Copy(ASCIIEncoding.ASCII.GetBytes("\t"), 0, buf, channel.Length, 1);
             Array.Copy(msg, 0, buf, channel.Length + 1, msg.Length);
 
-            PublishBag.Add(buf);            
+            PublishBag.Add(buf);
         }
 
         public void Flush()
@@ -181,7 +181,7 @@ namespace ESB
             int len = socket.Receive(buf);
             var portStr = Encoding.ASCII.GetString(buf, 0, len);
             socket.Close();
-            return String.Format("tcp://{0}:{1}",ep.Address, portStr);
+            return String.Format("tcp://{0}:{1}", ep.Address, portStr);
         }
 
         public static IPEndPoint Parse(string endpointstring)
@@ -282,7 +282,7 @@ namespace ESB
         byte[] buf;
         public int traffic = 0;
         List<string> channels;
-        public Subscriber(string _connectionString, string _proxyGuid, string ESBClientGuid) 
+        public Subscriber(string _connectionString, string _proxyGuid, string ESBClientGuid)
         {
             connectionString = _connectionString;
             buf = new byte[65536];
@@ -296,7 +296,7 @@ namespace ESB
             socket.Subscribe(binGuid);
             socket.Connect(connectionString);
             socket.ReceiveHighWatermark = 100000;
-            socket.ReceiveBufferSize = 128 * 1024;
+            socket.ReceiveBufferSize = 256 * 1024;
         }
 
         public void Dispose()
@@ -317,7 +317,7 @@ namespace ESB
             var start = Array.IndexOf(buf, (byte)9);
             if (start == -1) throw new Exception("Can not find the Delimiter \\t");
             start++;
-            MemoryStream stream = new MemoryStream(buf, start, size-start, false);
+            MemoryStream stream = new MemoryStream(buf, start, size - start, false);
             var respMsg = Serializer.Deserialize<Message>(stream);
             return respMsg;
         }
@@ -326,7 +326,7 @@ namespace ESB
         {
             if (channels.Contains(channel)) return;
             channels.Add(channel);
-            socket.Subscribe(ESBClient.stringToByteArray(channel+"\t"));
+            socket.Subscribe(ESBClient.stringToByteArray(channel + "\t"));
         }
     }
 
@@ -351,9 +351,9 @@ namespace ESB
 
     public class ESBOptions
     {
-       public int redisPort;
-       public int publisherPort;
-       public int maxInactiveTimeInMsBeforeReconnect;
+        public int redisPort;
+        public int publisherPort;
+        public int maxInactiveTimeInMsBeforeReconnect;
     }
 
     public class ESBClient : IDisposable
@@ -379,6 +379,8 @@ namespace ESB
         DateTime lastESBServerActiveTime;
         List<string> channels;
         bool isWork;
+        public bool isDisposing;
+
         static ESBClient()
         {
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
@@ -386,7 +388,8 @@ namespace ESB
 
         public ESBClient()
         {
-            Init("plt-esbredis01.toyga.local", new ESBOptions {
+            Init("plt-esbredis01.toyga.local", new ESBOptions
+            {
                 redisPort = 6379,
                 publisherPort = random.Next(7000, 8000),
                 maxInactiveTimeInMsBeforeReconnect = 15000
@@ -433,8 +436,7 @@ namespace ESB
             {
                 Thread.Sleep(250);
             }
-            isReady = true;
-            log.InfoFormat("Connected");
+            log.InfoFormat("Connected with Publisher Port : {0}", publisherPort);
             (new Thread(new ThreadStart(MainLoop))).Start();
 
             var cpus = Environment.ProcessorCount;
@@ -447,10 +449,12 @@ namespace ESB
                 workerList.Add(t);
                 t.Start();
             }
+            Ping();
         }
 
         public void Dispose()
         {
+            isDisposing = true;
             log.InfoFormat("ESBClient {0} dispose", guid);
             isWork = false;
             foreach (var w in workerList)
@@ -463,6 +467,7 @@ namespace ESB
             subscriber = null;
             redis.Dispose();
             redis = null;
+            isDisposing = false;
         }
 
 
@@ -503,7 +508,7 @@ namespace ESB
             subscribeCallbacks[channel][callbackGuid] = cb;
 
             if (channels.Contains(channel)) return callbackGuid;
-            
+
             channels.Add(channel);
             var msg = new Message
             {
@@ -534,12 +539,13 @@ namespace ESB
             var methodGuid = genGuid();
             localMethods[methodGuid] = new LocalInvokeMethod
             {
-                identifier = identifier+"/v"+version,
+                identifier = identifier + "/v" + version,
                 method = callback,
                 methodGuid = methodGuid
             };
 
-            var msg = new Message {
+            var msg = new Message
+            {
                 cmd = Message.Cmd.REGISTER_INVOKE,
                 payload = stringToByteArray(methodGuid),
                 source_component_guid = guid,
@@ -584,6 +590,8 @@ namespace ESB
                 return string.Empty;
             }
 
+            if (log.IsDebugEnabled) log.DebugFormat("Invoke()");
+
             string cmdGuid = genGuid();
 
             var s = new ResponseStruct
@@ -620,24 +628,26 @@ namespace ESB
 
         private void Response(Message respMsg)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("Got RESPONSE");
+            isReady = true;
             try
             {
                 //responsesMutex.WaitOne();
-                if(!responses.ContainsKey(respMsg.target_operation_guid))
+                if (!responses.ContainsKey(respMsg.target_operation_guid))
                 {
                     log.WarnFormat("Requested callback not found: {0} {1}", respMsg.target_operation_guid, respMsg);
                     //responsesMutex.ReleaseMutex();
                     return;
                 }
                 var resp = responses[respMsg.target_operation_guid];
-                
+
                 var cb = resp.callback;
                 ResponseStruct tmp;
-                while (!responses.TryRemove(respMsg.target_operation_guid,out tmp))
+                while (!responses.TryRemove(respMsg.target_operation_guid, out tmp))
                 {
                     Thread.Sleep(1);
                 }
-                
+
                 //responsesMutex.ReleaseMutex();
                 if (respMsg.cmd == Message.Cmd.RESPONSE)
                 {
@@ -699,7 +709,8 @@ namespace ESB
                 var ser = new ServiceStack.Text.JsonSerializer<Dictionary<string, object>>();
                 var ht = ser.DeserializeFromString(payload);
                 //var ht = JsonConvert.DeserializeObject<Hashtable>(payload, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include, FloatParseHandling = FloatParseHandling.Decimal });
-                localMethods[msg.target_operation_guid].method(ht, (err, resp) => {
+                localMethods[msg.target_operation_guid].method(ht, (err, resp) =>
+                {
                     if (err != null)
                     {
                         var errRespMsg = new Message
@@ -767,6 +778,8 @@ namespace ESB
                                 break;
                             case Message.Cmd.PONG:
                                 lastESBServerActiveTime = DateTime.Now;
+                                isReady = true;
+                                if (log.IsDebugEnabled) log.DebugFormat("Got PONG");
                                 break;
                             case Message.Cmd.RESPONSE:
                                 Response(msg);
@@ -807,15 +820,16 @@ namespace ESB
                         isConnecting = false;
                         while (isConnecting || !Connect())
                         {
+
                             Thread.Sleep(50);
                         }
-                        isReady = true;
                         log.InfoFormat("Connected");
                         lastESBServerActiveTime = DateTime.Now;
+                        Ping();
                     }
 
                     CleanUpDeadCallbacks();
-                    if(!isSomethingHappen)
+                    if (!isSomethingHappen)
                         Thread.Sleep(1);
                 }
                 catch (Exception e)
@@ -857,12 +871,13 @@ namespace ESB
                     try
                     {
                         cb(ErrorCodes.SERVICE_TIMEOUT, null, "Timeout on service call");
-                    } catch(Exception e)
+                    }
+                    catch (Exception e)
                     {
                         log.ErrorFormat("Error while executing callback: {0}", e.ToString());
                     }
                     ResponseStruct tmp;
-                    while (!responses.TryRemove(g,out tmp))
+                    while (!responses.TryRemove(g, out tmp))
                     {
                         Thread.Sleep(1);
                     }
@@ -929,14 +944,14 @@ namespace ESB
             }
         }
 
-        public static byte[] stringToByteArray(string str) 
+        public static byte[] stringToByteArray(string str)
         {
             var uBytes = Encoding.Unicode.GetBytes(str);
             byte[] bytes = Encoding.Convert(Encoding.Unicode, Encoding.ASCII, uBytes);
             return bytes;
         }
 
-        public static string byteArrayToString(byte[] data) 
+        public static string byteArrayToString(byte[] data)
         {
             return System.Text.Encoding.UTF8.GetString(data);
         }
