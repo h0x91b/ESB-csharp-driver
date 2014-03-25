@@ -89,6 +89,7 @@ namespace ESB
 
     internal class Publisher : IDisposable
     {
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         public string connectionString { get; internal set; }
         public string hostName { get; internal set; }
         public int port { get; internal set; }
@@ -143,12 +144,15 @@ namespace ESB
 
         public void Flush()
         {
+            var count = PublishBag.Count;
+            if (count < 1) return;
             byte[] buf;
-            for (var i = 0; i < 100000; i++)
+            for (var i = 0; i < count; i++)
             {
                 if (!PublishBag.TryTake(out buf))
                 {
-                    continue;
+                    log.InfoFormat("TryTake failed after {0} of {1}", i, count);
+                    break;
                 }
                 int rc = socket.Send(buf, buf.Length, SocketFlags.DontWait);
                 traffic += buf.Length;
@@ -366,7 +370,7 @@ namespace ESB
         public int maxInactiveTimeInMsBeforeReconnect { get; internal set; }
         public string proxyGuid { get; internal set; }
         public string registryRedisAddr { get; internal set; }
-        private BlockingCollection<Message> InvokeCallBag;
+        private List<BlockingCollection<Message>> InvokeCallBag;
         RedisClient redis;
         Requester requester = null;
         Publisher publisher = null;
@@ -423,7 +427,7 @@ namespace ESB
             registryRedisAddr = _registryRedisAddr;
             redis = new RedisClient(registryRedisAddr, options.redisPort);
             responses = new ConcurrentDictionary<string, ResponseStruct>();
-            InvokeCallBag = new BlockingCollection<Message>(new ConcurrentBag<Message>());
+            InvokeCallBag = new List<BlockingCollection<Message>>();
             localMethods = new Dictionary<string, LocalInvokeMethod>();
             subscribeCallbacks = new Dictionary<string, Dictionary<string, SubscribeCallback>>();
             channels = new List<string>();
@@ -440,14 +444,15 @@ namespace ESB
             (new Thread(new ThreadStart(MainLoop))).Start();
 
             var cpus = Environment.ProcessorCount;
-            var workers = cpus * 1;
+            var workers = cpus*Paragonex.Common.Helpers.Configuration.GetAppConfigValue<int>("WorkersCoresMultiplier", 1);
             log.InfoFormat("Machine have {0} cores, using {1} workers", cpus, workers);
             workerList = new List<Thread>();
             for (var i = 0; i < workers; i++)
             {
-                var t = new Thread(new ThreadStart(InvokeCallWorker));
+                InvokeCallBag.Add(new BlockingCollection<Message>());
+                var t = new Thread(new ParameterizedThreadStart(InvokeCallWorker));
                 workerList.Add(t);
-                t.Start();
+                t.Start(i);
             }
             Ping();
         }
@@ -688,14 +693,20 @@ namespace ESB
             }
         }
 
-        private void InvokeCallWorker()
+        public void InvokeCallWorker(object i)
         {
+            int index = Convert.ToInt32(i); 
             Message msg;
             var calls = 0;
             Thread.CurrentThread.Name = "Invoke Worker";
             while (isWork)
             {
-                msg = InvokeCallBag.Take();
+                //if (InvokeCallBag[index].IsEmpty || !InvokeCallBag[index].TryTake(out msg))
+                //{
+                //    Thread.Sleep(5);
+                //    continue;
+                //}
+                msg = (InvokeCallBag[index]).Take();
                 InvokeCall(msg);
                 calls++;
             }
@@ -754,7 +765,9 @@ namespace ESB
             int totalMessages = 0;
             int cycles = 0;
             var now = DateTime.Now;
+            var lastDeadCallbackCleanUp = DateTime.Now;
             var isSomethingHappen = false;
+            var workerRotator = 0;
             while (isWork)
             {
                 cycles++;
@@ -771,7 +784,7 @@ namespace ESB
                         switch (msg.cmd)
                         {
                             case Message.Cmd.INVOKE:
-                                InvokeCallBag.Add(msg);
+                                InvokeCallBag[workerRotator++ % workerList.Count].Add(msg);
                                 break;
                             case Message.Cmd.PING:
                                 Pong(msg);
@@ -802,33 +815,41 @@ namespace ESB
                     }
 
                     publisher.Flush();
-                    if ((DateTime.Now - now).TotalMilliseconds > 1000)
-                    {
-                        messages = 0;
-                        publisher.traffic = 0;
-                        subscriber.traffic = 0;
-                        now = DateTime.Now;
-                        Ping();
-                        SendLocalMethods();
-                    }
 
-                    if ((DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= maxInactiveTimeInMsBeforeReconnect)
+                    if (cycles % 100 == 0)
                     {
-                        log.ErrorFormat("More then {0} second there is no activity from ESB server, probaly it is dead...", maxInactiveTimeInMsBeforeReconnect);
-                        isReady = false;
-                        FlushAllCallbacks();
-                        isConnecting = false;
-                        while (isConnecting || !Connect())
+
+                        if ((DateTime.Now - now).TotalMilliseconds > 1000)
                         {
-
-                            Thread.Sleep(50);
+                            messages = 0;
+                            publisher.traffic = 0;
+                            subscriber.traffic = 0;
+                            now = DateTime.Now;
+                            Ping();
+                            SendLocalMethods();
                         }
-                        log.InfoFormat("Connected");
-                        lastESBServerActiveTime = DateTime.Now;
-                        Ping();
-                    }
 
-                    CleanUpDeadCallbacks();
+                        if ((DateTime.Now - lastESBServerActiveTime).TotalMilliseconds >= maxInactiveTimeInMsBeforeReconnect)
+                        {
+                            log.ErrorFormat("More then {0} second there is no activity from ESB server, probaly it is dead...", maxInactiveTimeInMsBeforeReconnect);
+                            isReady = false;
+                            FlushAllCallbacks();
+                            isConnecting = false;
+                            while (isConnecting || !Connect())
+                            {
+                                Thread.Sleep(50);
+                            }
+                            log.InfoFormat("Connected");
+                            lastESBServerActiveTime = DateTime.Now;
+                            Ping();
+                        }
+
+                        if ((DateTime.Now - lastDeadCallbackCleanUp).TotalMilliseconds >= 1000)
+                        {
+                            CleanUpDeadCallbacks();
+                            lastDeadCallbackCleanUp = DateTime.Now;
+                        }
+                    }
                     if (!isSomethingHappen)
                         Thread.Sleep(1);
                 }
